@@ -132,6 +132,7 @@ async function submitUserMessage(content: string) {
     if (type == 'vector<u8>') return z.string().describe(describe)
     if (type == 'vector<address>') return z.array(z.string()).describe(describe)
     if (type == 'vector<string::String>') return z.array(z.string()).describe(describe)
+      if (type == '0x1::string::String') return z.array(z.string()).describe(describe)
     return z.string().describe(describe)
   }
 
