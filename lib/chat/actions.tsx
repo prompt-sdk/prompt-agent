@@ -17,8 +17,8 @@ import {
   BotMessage,
   SystemMessage,
 } from '@/components/example'
-
-import { string, z } from 'zod'
+import { generateObject, generateText } from 'ai';
+import { z } from 'zod'
 import { AddRfpSkeleton } from '@/components/rfp/add-rfp-skeleton'
 import {
   formatNumber,
@@ -105,7 +105,6 @@ async function submitUserMessage(content: string) {
   'use server'
 
   const aiState = getMutableAIState<typeof AI>()
-
   aiState.update({
     ...aiState.get(),
     messages: [
@@ -121,7 +120,7 @@ async function submitUserMessage(content: string) {
   let textStream: undefined | ReturnType<typeof createStreamableValue<string>>
   let textNode: undefined | React.ReactNode
 
-  const res = await fetch('https://prompt-agent-smartcontract-tool.vercel.app/api/tools?user_id=kurodenjiro');
+  const res = await fetch('https://prompt-agent-smartcontract-tool.vercel.app/api/tools?user_id=testAptos&type=contractTool');
   const dataTools = await res.json()
   const zodExtract = (type: any, describe: any) => {
     if (type == 'u128') return z.number().describe(describe)
@@ -138,72 +137,88 @@ async function submitUserMessage(content: string) {
   }
 
   const tools = dataTools.reduce((tool: any, item: any) => {
+    if (item.type == 'contractTool') {
+      const ParametersSchema = Object.keys(item.tool.params).reduce((acc: any, key: any) => {
+        acc[key] = key = zodExtract(item.tool.params[key].type, item.tool.params[key].description);
+        return acc;
+      }, {})
+      type ParametersData = z.infer<typeof ParametersSchema>;
+      tool[item._id.toString()] = {
+        description: item.tool.description,
+        parameters: z.object(ParametersSchema),
+        generate: async function* (ParametersData: ParametersData) {
+          if (item.tool.type == 'entry') {
+            yield (
+              <BotCard>
+                <AddRfpSkeleton />
+              </BotCard>
+            )
 
-    const ParametersSchema = Object.keys(item.tool.params).reduce((acc: any, key: any) => {
-      acc[key] = key = zodExtract(item.tool.params[key].type, item.tool.params[key].description);
-      return acc;
-    }, {})
-    type ParametersData = z.infer<typeof ParametersSchema>;
-    tool[item.name.replaceAll(':', "")] = {
-      description: item.tool.description,
-      parameters: z.object(ParametersSchema),
-      generate: async function* (ParametersData: ParametersData) {
-        yield (
-          <BotCard>
-            <AddRfpSkeleton />
-          </BotCard>
-        )
+            await sleep(1000)
 
-        await sleep(1000)
-
-        const toolCallId = nanoid()
-        aiState.done({
-          ...aiState.get(),
-          messages: [
-            ...aiState.get().messages,
-            {
-              id: nanoid(),
-              role: 'assistant',
-              content: [
+            const toolCallId = nanoid()
+            aiState.done({
+              ...aiState.get(),
+              messages: [
+                ...aiState.get().messages,
                 {
-                  type: 'tool-call',
-                  toolName: item.name.replaceAll(':', ""),
-                  toolCallId,
-                  args: ParametersData
+                  id: nanoid(),
+                  role: 'assistant',
+                  content: [
+                    {
+                      type: 'tool-call',
+                      toolName: item._id.toString(),
+                      toolCallId,
+                      args: ParametersData
+                    }
+                  ]
+                },
+                {
+                  id: nanoid(),
+                  role: 'tool',
+                  content: [
+                    {
+                      type: 'tool-result',
+                      toolName: item._id.toString(),
+                      toolCallId,
+                      result: ParametersData
+                    }
+                  ]
                 }
               ]
-            },
-            {
-              id: nanoid(),
-              role: 'tool',
-              content: [
-                {
-                  type: 'tool-result',
-                  toolName: item.name.replaceAll(':', ""),
-                  toolCallId,
-                  result: ParametersData
-                }
-              ]
-            }
-          ]
-        })
+            })
 
-        return (
-          <BotCard>
-            <BotCard>
-              <AddRFP props={ParametersData} />
-            </BotCard>
-          </BotCard>
-        )
-      }
-    };
+            return (
+              <BotCard>
+                <BotCard>
+                  <AddRFP props={ParametersData} />
+                </BotCard>
+              </BotCard>
+            )
+          }
+          if (item.tool.type == 'view') {
+            const { text } = await generateText({
+              model: openai('gpt-4o'),
+              system:`This function retrieves the balance of a specified owner for a given CoinType, including any paired fungible asset balance if it exists. It sums the balance of the coin and the balance of the fungible asset, providing a comprehensive view of the owner's total holdings`,
+              prompt:'0.4'
+            });
+            return text
+          }
+
+        }
+      };
+    }
+
     return tool;
   }, {});
 
   const result = await streamUI({
     model: openai('gpt-3.5-turbo'),
     initial: <SpinnerMessage />,
-    system: ` You are helpful assasint . do what user say`,
+    system: ` You are a Helpful developer.\n 
+            Analyze each query to determine if it requires plain text information or an action via a tool. Do not ever send tool call arguments with your chat. You must specifically call the tool with the information\n
+            For informational queries like "create label show balance of 0x123123123", respond with text, then balance of account you answered with using the 'getBlanace'. Always say something before or after tool usage.\n
+            Provide a response clearly and concisely. Always be polite, informative, and efficient.`,
     messages: [
       ...aiState.get().messages.map((message: any) => ({
         role: message.role,
@@ -216,7 +231,6 @@ async function submitUserMessage(content: string) {
         textStream = createStreamableValue('')
         textNode = <BotMessage content={textStream.value} />
       }
-
       if (done) {
         textStream.done()
         aiState.done({
@@ -236,9 +250,8 @@ async function submitUserMessage(content: string) {
 
       return textNode
     },
-    tools: tools
+    tools: tools,
   })
-
   return {
     id: nanoid(),
     display: result.value
