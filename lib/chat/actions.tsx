@@ -17,9 +17,9 @@ import {
   BotMessage,
   SystemMessage,
 } from '@/components/example'
-import { generateObject, generateText } from 'ai';
+import { generateText } from 'ai';
 import { z } from 'zod'
-import { AddRfpSkeleton } from '@/components/rfp/add-rfp-skeleton'
+import { SmartActionSkeleton } from '@/components/transactionFlows/action-skeleton'
 import {
   formatNumber,
   runAsyncFnWithoutBlocking,
@@ -30,76 +30,8 @@ import { saveChat } from '@/app/actions'
 import { SpinnerMessage, UserMessage } from '@/components/example/message'
 import { Chat, Message } from '@/lib/types'
 import { auth } from '@/auth'
-import { AddRFP } from '@/components/rfp/add-rfp'
+import { SmartAction } from '@/components/transactionFlows/action'
 
-async function confirmPurchase(symbol: string, price: number, amount: number) {
-  'use server'
-
-  const aiState = getMutableAIState<typeof AI>()
-
-  const purchasing = createStreamableUI(
-    <div className="inline-flex items-start gap-1 md:items-center">
-      {spinner}
-      <p className="mb-2">
-        Purchasing {amount} ${symbol}...
-      </p>
-    </div>
-  )
-
-  const systemMessage = createStreamableUI(null)
-
-  runAsyncFnWithoutBlocking(async () => {
-    await sleep(1000)
-
-    purchasing.update(
-      <div className="inline-flex items-start gap-1 md:items-center">
-        {spinner}
-        <p className="mb-2">
-          Purchasing {amount} ${symbol}... working on it...
-        </p>
-      </div>
-    )
-
-    await sleep(1000)
-
-    purchasing.done(
-      <div>
-        <p className="mb-2">
-          You have successfully purchased {amount} ${symbol}. Total cost:{' '}
-          {formatNumber(amount * price)}
-        </p>
-      </div>
-    )
-
-    systemMessage.done(
-      <SystemMessage>
-        You have purchased {amount} shares of {symbol} at ${price}. Total cost ={' '}
-        {formatNumber(amount * price)}.
-      </SystemMessage>
-    )
-
-    aiState.done({
-      ...aiState.get(),
-      messages: [
-        ...aiState.get().messages,
-        {
-          id: nanoid(),
-          role: 'system',
-          content: `[User has purchased ${amount} shares of ${symbol} at ${price}. Total cost = ${amount * price
-            }]`
-        }
-      ]
-    })
-  })
-
-  return {
-    purchasingUI: purchasing.value,
-    newMessage: {
-      id: nanoid(),
-      display: systemMessage.value
-    }
-  }
-}
 
 async function submitUserMessage(content: string) {
   'use server'
@@ -150,7 +82,7 @@ async function submitUserMessage(content: string) {
           if (item.tool.type == 'entry') {
             yield (
               <BotCard>
-                <AddRfpSkeleton />
+                <SmartActionSkeleton />
               </BotCard>
             )
 
@@ -167,7 +99,7 @@ async function submitUserMessage(content: string) {
                   content: [
                     {
                       type: 'tool-call',
-                      toolName: item._id.toString(),
+                      toolName: item.type + item.tool.type,
                       toolCallId,
                       args: ParametersData
                     }
@@ -179,7 +111,7 @@ async function submitUserMessage(content: string) {
                   content: [
                     {
                       type: 'tool-result',
-                      toolName: item._id.toString(),
+                      toolName: item.type + item.tool.type,
                       toolCallId,
                       result: ParametersData
                     }
@@ -191,20 +123,64 @@ async function submitUserMessage(content: string) {
             return (
               <BotCard>
                 <BotCard>
-                  <AddRFP props={ParametersData} />
+                  <SmartAction props={ParametersData} />
                 </BotCard>
               </BotCard>
             )
+
           }
           if (item.tool.type == 'view') {
+            yield (
+              <BotCard>
+                <SmartActionSkeleton />
+              </BotCard>
+            )
+
+            await sleep(1000)
+
+            const toolCallId = nanoid()
             const { text } = await generateText({
               model: openai('gpt-4o'),
-              system:`This function retrieves the balance of a specified owner for a given CoinType, including any paired fungible asset balance if it exists. It sums the balance of the coin and the balance of the fungible asset, providing a comprehensive view of the owner's total holdings`,
-              prompt:'0.4'
+              system: `This function retrieves the balance of a specified owner for a given CoinType, including any paired fungible asset balance if it exists. It sums the balance of the coin and the balance of the fungible asset, providing a comprehensive view of the owner's total holdings`,
+              prompt: '0.4'
             });
-            return text
-          }
+            aiState.done({
+              ...aiState.get(),
+              messages: [
+                ...aiState.get().messages,
+                {
+                  id: nanoid(),
+                  role: 'assistant',
+                  content: [
+                    {
+                      type: 'tool-call',
+                      toolName: item.type + item.tool.type,
+                      toolCallId,
+                      args: ParametersData
+                    }
+                  ]
+                },
+                {
+                  id: nanoid(),
+                  role: 'tool',
+                  content: [
+                    {
+                      type: 'tool-result',
+                      toolName: item.type + item.tool.type,
+                      toolCallId,
+                      result: text
+                    }
+                  ]
+                }
+              ]
+            })
 
+            return <BotCard>
+              <BotCard>
+                <SmartAction props={text} />
+              </BotCard>
+            </BotCard>
+          }
         }
       };
     }
@@ -213,7 +189,7 @@ async function submitUserMessage(content: string) {
   }, {});
 
   const result = await streamUI({
-    model: openai('gpt-3.5-turbo'),
+    model: openai('gpt-4o'),
     initial: <SpinnerMessage />,
     system: ` You are a Helpful developer.\n 
             Analyze each query to determine if it requires plain text information or an action via a tool. Do not ever send tool call arguments with your chat. You must specifically call the tool with the information\n
@@ -270,8 +246,7 @@ export type UIState = {
 
 export const AI = createAI<AIState, UIState>({
   actions: {
-    submitUserMessage,
-    confirmPurchase
+    submitUserMessage
   },
   initialUIState: [],
   initialAIState: { chatId: nanoid(), messages: [] },
@@ -330,10 +305,15 @@ export const getUIStateFromAIState = (aiState: Chat) => {
       display:
         message.role === 'tool' ? (
           message.content.map(tool => {
-            return tool.toolName === 'addRFP' ? (
+            return tool.toolName === 'contractToolentry' ? (
               <BotCard>
                 {/* TODO: Infer types based on the tool result*/}
-                <AddRFP props={tool.result} />
+                <SmartAction props={tool.result} />
+              </BotCard>
+            ) : tool.toolName === 'contractToolview' ? (
+              <BotCard>
+                {/* TODO: Infer types based on the tool result*/}
+                <SmartAction props={tool.result} />
               </BotCard>
             ) : null
           })
